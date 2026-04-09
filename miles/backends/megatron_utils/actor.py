@@ -38,6 +38,7 @@ from ..training_utils.parallel import get_parallel_state
 from .checkpoint import load_checkpoint
 from .checkpoint_transfer import recv_ckpt
 from .checkpoint_transfer import send_ckpt as _send_ckpt
+from .in_memory_checkpoint import InMemoryCheckpointManager
 from .indep_dp import reconfigure_indep_dp_group
 from .initialize import init, is_first_replica_megatron_main_rank
 from .lora_utils import is_lora_enabled
@@ -134,13 +135,14 @@ class MegatronTrainRayActor(TrainRayActor):
                 m.enabled = getattr(self.args, f"use_{m.name}_replay")
                 m.enable_check_replay_result = m.enabled and self.args.ci_test
 
-        checkpointing_context = None
         if recv_ckpt_src_rank is not None:
             ckpt_manager = recv_ckpt(
                 indep_dp=get_parallel_state().indep_dp,
                 src_rank=recv_ckpt_src_rank,
             )
-            checkpointing_context = {"local_checkpoint_manager": ckpt_manager}
+        else:
+            ckpt_manager = InMemoryCheckpointManager()
+        checkpointing_context = {"local_checkpoint_manager": ckpt_manager}
 
         (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
             args, role, checkpointing_context=checkpointing_context

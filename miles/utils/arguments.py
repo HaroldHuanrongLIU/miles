@@ -1894,10 +1894,9 @@ def miles_validate_args(args):
         args.non_persistent_ckpt_type = "local"
         if getattr(args, "non_persistent_local_ckpt_dir", None) is None:
             args.non_persistent_local_ckpt_dir = "/tmp/miles_local_ckpt"
-        if args.non_persistent_local_ckpt_algo is None:
-            # atomic: each rank saves independently, no collective communication.
-            # fully_parallel needs all_gather_object which hangs after ncclCommAbort in healing.
-            args.non_persistent_local_ckpt_algo = "atomic"
+        # atomic: each rank saves independently, no collective communication.
+        # fully_parallel needs all_gather_object which hangs after ncclCommAbort in healing.
+        args.non_persistent_local_ckpt_algo = "atomic"
         logger.info(
             "train in ft_components. Auto set indep_dp=True, delay_split_train_data_by_dp=True, save_local_weight_checksum=True, enable_event_analyzer=True, enable_witness=True, non_persistent_ckpt_type='local', non_persistent_local_ckpt_algo=%r",
             args.non_persistent_local_ckpt_algo,
