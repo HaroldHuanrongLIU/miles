@@ -24,10 +24,14 @@ TOOL_CALL_TEST_MODELS = [
     "Qwen/Qwen3-Coder-30B-A3B-Instruct",
     # "meta-llama/Llama-3.2-1B-Instruct",  # Skipped: gated repo, requires HF_TOKEN in CI
     "zai-org/GLM-4.7-Flash",
+    "mistralai/Mistral-7B-Instruct-v0.3",
     "deepseek-ai/DeepSeek-V3",
     "stepfun-ai/step3",
     "MiniMaxAI/MiniMax-M2",
     "MiniMaxAI/MiniMax-M2.5",
+    "internlm/internlm3-8b-instruct",
+    "THUDM/glm-4-9b-chat",
+    "moonshotai/Kimi-K2-Instruct",
     "moonshotai/Kimi-K2.5",
     "XiaomiMiMo/MiMo-7B-RL",
 ]
@@ -52,10 +56,14 @@ _ALLOWED_APPEND_ROLES = ["tool", "user", "system"]
 _TOK_CACHE: dict[tuple[str, str | None], AutoTokenizer] = {}
 _ASSISTANT_START_BY_MODEL: dict[str, str] = {
     "Qwen/Qwen2.5-0.5B-Instruct": "<|im_start|>assistant\n",
+    "mistralai/Mistral-7B-Instruct-v0.3": "[/INST]",
     "deepseek-ai/DeepSeek-V3": "<｜Assistant｜>",
     "stepfun-ai/step3": "<|BOT|>assistant\n",
     "MiniMaxAI/MiniMax-M2": "]~b]ai\n",
     "MiniMaxAI/MiniMax-M2.5": "]~b]ai\n",
+    "internlm/internlm3-8b-instruct": "<|im_start|>assistant\n",
+    "THUDM/glm-4-9b-chat": "<|assistant|>",
+    "moonshotai/Kimi-K2-Instruct": "<|im_assistant|>assistant<|im_middle|>",
     "moonshotai/Kimi-K2.5": "<|im_assistant|>assistant<|im_middle|>",
     "XiaomiMiMo/MiMo-7B-RL": "<|im_start|>assistant\n",
 }
