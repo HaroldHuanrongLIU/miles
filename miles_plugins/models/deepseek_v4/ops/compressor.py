@@ -66,7 +66,7 @@ class DeepSeekV4Compressor(nn.Module):
         rope_head_dim = config.qk_pos_emb_head_dim
         norm_eps = config.layernorm_epsilon
 
-        assert dim == 4096
+        assert dim in {4096, 7168}, f"unsupported hidden_size {dim} (Flash=4096 / Pro=7168)"
         assert head_dim in {128, 512}
         assert rope_head_dim == 64
         assert compress_ratio in {4, 128}

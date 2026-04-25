@@ -85,14 +85,16 @@ class DeepSeekV4Attention(MegatronModule):
         self.compress_ratio = config.dsv4_compress_ratios[layer_id] if config.dsv4_compress_ratios else 0
         self.eps = config.layernorm_epsilon
 
-        assert self.dim == 4096
-        assert self.n_heads == 64
-        assert self.q_lora_rank == 1024
+        # Allow either Flash (dim=4096, heads=64, q_lora=1024, groups=8) or
+        # Pro (dim=7168, heads=128, q_lora=1536, groups=16). Other dims are shared.
+        assert (self.dim, self.n_heads, self.q_lora_rank, self.n_groups) in {
+            (4096, 64, 1024, 8),     # DeepSeek-V4-Flash
+            (7168, 128, 1536, 16),   # DeepSeek-V4-Pro
+        }, f"unsupported (dim, n_heads, q_lora_rank, n_groups) = {(self.dim, self.n_heads, self.q_lora_rank, self.n_groups)}"
         assert self.o_lora_rank == 1024
         assert self.head_dim == 512
         assert self.rope_head_dim == 64
         assert self.nope_head_dim == 448
-        assert self.n_groups == 8
         assert self.window_size == 128
 
         config_no_sp = copy.copy(config)

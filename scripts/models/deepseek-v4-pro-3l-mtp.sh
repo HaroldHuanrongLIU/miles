@@ -1,0 +1,4 @@
+MODEL_ARGS_NUM_LAYERS=3
+COMPRESS_RATIOS=(128 128 4)
+ROTARY_SCALING_FACTOR=16
+source "$(dirname -- "${BASH_SOURCE[0]}")/deepseek-v4-pro.sh"
