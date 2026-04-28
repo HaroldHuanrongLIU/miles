@@ -25,8 +25,8 @@ from miles.utils.types import RolloutBatch
 from .cp_utils import (
     _allgather_cp_redistribute,
     all_gather_with_cp,
-    get_logits_and_tokens_offset_with_cp,
     get_local_response_loss_masks,
+    get_logits_and_tokens_offset_with_cp,
     get_sum_of_sample_mean,
 )
 from .parallel import get_parallel_state
