@@ -304,11 +304,28 @@ def apply_opd_kl_to_advantages(
     if teacher_log_probs is None:
         raise ValueError(f"OPD with opd_type='{args.opd_type}' requires teacher_log_probs, but it is missing.")
 
+    if not (len(advantages) == len(student_log_probs) == len(teacher_log_probs)):
+        raise ValueError(
+            f"OPD length mismatch: advantages={len(advantages)}, "
+            f"student_log_probs={len(student_log_probs)}, teacher_log_probs={len(teacher_log_probs)}."
+        )
+
     device = student_log_probs[0].device
     teacher_log_probs = [t.to(device=device) for t in teacher_log_probs]
 
     reverse_kls = []
     for i, adv in enumerate(advantages):
+        if student_log_probs[i].shape != teacher_log_probs[i].shape:
+            raise ValueError(
+                f"OPD shape mismatch at sample {i}: student_log_probs={tuple(student_log_probs[i].shape)}, "
+                f"teacher_log_probs={tuple(teacher_log_probs[i].shape)}."
+            )
+        if adv.shape != student_log_probs[i].shape:
+            raise ValueError(
+                f"OPD shape mismatch at sample {i}: advantages={tuple(adv.shape)}, "
+                f"student_log_probs={tuple(student_log_probs[i].shape)}. "
+                "OPD expects per-token advantages; broadcast scalar advantages must be expanded before this call."
+            )
         reverse_kl = student_log_probs[i] - teacher_log_probs[i]
         advantages[i] = adv - args.opd_kl_coef * reverse_kl
         reverse_kls.append(reverse_kl)

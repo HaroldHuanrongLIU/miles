@@ -579,6 +579,8 @@ class MegatronTrainRayActor(TrainRayActor):
         self.args.no_load_rng = True
         self.args.finetune = True
 
+        # load_checkpoint reads self.args.ckpt_step to pick which iteration to load.
+        # Temporarily override it for ref/teacher loads, then restore after the load below.
         if model_tag == "ref" and self.args.ref_ckpt_step is not None:
             old_ckpt_step = self.args.ckpt_step
             self.args.ckpt_step = self.args.ref_ckpt_step

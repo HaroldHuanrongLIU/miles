@@ -15,16 +15,18 @@ This example shows how to run **on-policy distillation (OPD)** using miles. A sm
 |----------|-------------|
 | `--use-opd` | Enable on-policy distillation. Required flag to use OPD. |
 | `--opd-type` | Type of OPD: `sglang` or `megatron`. Required when `--use-opd` is set. |
-| `--opd-kl-coef` | OPD KL penalty coefficient (default: 1.0). |
-| `--opd-teacher-load` | Path to teacher checkpoint. **Required** when `--opd-type=megatron`, **must not be set** when `--opd-type=sglang`. |
-| `--opd-teacher-ckpt-step` | Optional checkpoint step for teacher model. |
+| `--opd-kl-coef` | OPD KL penalty coefficient (default: 1.0). The teacher KL is added to advantages as: `opd_advantage = base_advantage - opd_kl_coef * (student_logp - teacher_logp)`. Larger values pull the student more strongly toward the teacher. |
+| `--opd-teacher-load` | Path to teacher checkpoint directory. **Required** when `--opd-type=megatron`, **must not be set** when `--opd-type=sglang`. |
+| `--opd-teacher-ckpt-step` | Optional. Selects a specific iteration inside `--opd-teacher-load` (overrides `latest_checkpointed_iteration.txt`). Mirrors `--ref-ckpt-step`. Leave unset to use the latest checkpoint in the directory. |
 
 ## Mode Comparison
 
 | Mode | Teacher Location | When to use |
 |------|------------------|-------------|
-| `sglang` | External SGLang server | Teacher has different architecture or larger than GPU memory |
-| `megatron` | Loaded into Megatron training | Teacher has same architecture as policy/ref model |
+| `sglang` | External SGLang server | Teacher has different architecture, or is larger than fits alongside the policy in training memory |
+| `megatron` | Loaded into Megatron training | Teacher shares architecture with the policy/ref model |
+
+**Which mode should I pick?** If the teacher fits in the training process and shares architecture with the policy, prefer `megatron`. Teacher log-probs are computed in the same forward pass with the same kernels, dtypes, and tokenization as the student, which avoids subtle numerical drift from a separate inference engine and removes the need to manage a second server. Use `sglang` when those constraints can't be met (different architecture, teacher too large to co-locate, or you already have a teacher server you want to reuse).
 
 ## Components
 
