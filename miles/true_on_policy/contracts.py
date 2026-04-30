@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from .schema import (
     QWEN3_DENSE_TRUE_ON_POLICY_V1_SCHEMA,
+    QWEN3_MOE_TRUE_ON_POLICY_V1_SCHEMA,
     KernelContract,
     LogprobContract,
     ModelFamily,
@@ -50,10 +51,25 @@ class TrueOnPolicyContract:
         self,
         *,
         train_backend: str,
-        sglang_target: str,
+        parallel_layout=None,
+        sglang_target: str | None = None,
     ) -> dict[str, object]:
         uses_megatron = train_backend == "megatron"
-        uses_tp_invariant_rollout = sglang_target == "fsdp_tp"
+        if parallel_layout is not None:
+            uses_tp_invariant_rollout = (
+                parallel_layout.uses_train_tp
+                or parallel_layout.uses_train_expert_tp
+                or parallel_layout.uses_rollout_tp
+            )
+            uses_ep_invariant_moe = parallel_layout.uses_train_ep or parallel_layout.uses_rollout_ep
+            sglang_attention_data_parallel_size = self._sglang_attention_data_parallel_size(
+                parallel_layout
+            )
+        else:
+            uses_tp_invariant_rollout = sglang_target == "fsdp_tp"
+            uses_ep_invariant_moe = False
+            sglang_attention_data_parallel_size = 1
+        is_moe = self.model_family == "qwen3_moe"
         return {
             "deterministic_inference": True,
             "deterministic_training": True,
@@ -64,16 +80,39 @@ class TrueOnPolicyContract:
             "batch_invariant_mode": uses_megatron,
             "tp_invariant_row_linear": uses_tp_invariant_rollout,
             "deterministic_tp_allreduce": uses_tp_invariant_rollout,
+            "deterministic_moe_routing": is_moe,
+            "moe_topk_tiebreak": "stable_sort" if is_moe else None,
+            "deterministic_moe_dispatch": is_moe and uses_ep_invariant_moe,
+            "deterministic_moe_combine": is_moe and uses_ep_invariant_moe,
+            "ep_invariant_moe": is_moe and uses_ep_invariant_moe,
+            "sglang_attention_data_parallel_size": (
+                sglang_attention_data_parallel_size if is_moe else 1
+            ),
         }
+
+    def _sglang_attention_data_parallel_size(self, parallel_layout) -> int:
+        if self.model_family != "qwen3_moe" or not parallel_layout.uses_rollout_ep:
+            return 1
+
+        # TODO: Re-enable this once the SGLang DP-attention + EP topology is
+        # parity-gated. With Qwen3-30B-A3B, DP-attention+EP currently produces
+        # corrupted rollout text and low logprob scale, while EP-only rollout is
+        # healthy. Keep the true-on-policy contract on the verified EP path.
+        return 1
 
 
 QWEN3_DENSE_TRUE_ON_POLICY_V1 = TrueOnPolicyContract(
     schema=QWEN3_DENSE_TRUE_ON_POLICY_V1_SCHEMA,
 )
 
+QWEN3_MOE_TRUE_ON_POLICY_V1 = TrueOnPolicyContract(
+    schema=QWEN3_MOE_TRUE_ON_POLICY_V1_SCHEMA,
+)
+
 
 _CONTRACT_BY_NAME = {
     QWEN3_DENSE_TRUE_ON_POLICY_V1.name: QWEN3_DENSE_TRUE_ON_POLICY_V1,
+    QWEN3_MOE_TRUE_ON_POLICY_V1.name: QWEN3_MOE_TRUE_ON_POLICY_V1,
 }
 
 

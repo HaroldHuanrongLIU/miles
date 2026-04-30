@@ -6,6 +6,7 @@ import pytest
 
 from miles.true_on_policy import (
     QWEN3_DENSE_TRUE_ON_POLICY_V1,
+    QWEN3_MOE_TRUE_ON_POLICY_V1,
     apply_true_on_policy_script_defaults,
     build_true_on_policy_launch_plan,
     get_megatron_model_type,
@@ -22,10 +23,15 @@ def _args(**overrides):
         "tensor_model_parallel_size": 2,
         "context_parallel_size": 4,
         "pipeline_model_parallel_size": 1,
+        "expert_model_parallel_size": 1,
+        "expert_tensor_parallel_size": 1,
         "rollout_num_gpus_per_engine": 1,
+        "sglang_expert_parallel_size": 1,
         "sglang_rl_on_policy_target": None,
         "true_on_policy_contract": None,
         "use_sequence_parallel": True,
+        "num_nodes": 1,
+        "num_gpus_per_node": 8,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -53,6 +59,23 @@ def test_qwen3_dense_profile_resolves_model_names():
 def test_unknown_true_on_policy_model_fails_early():
     with pytest.raises(ValueError, match="does not have a model profile"):
         get_true_on_policy_model_profile("unknown-model")
+
+
+def test_qwen3_moe_profile_resolves_ep_contract():
+    profile = get_true_on_policy_model_profile("Qwen3-30B-A3B")
+    contract = get_true_on_policy_contract("qwen3_moe_true_on_policy_v1")
+
+    assert profile.family == "qwen3_moe"
+    assert profile.contract is QWEN3_MOE_TRUE_ON_POLICY_V1
+    assert profile.contract is contract
+    assert contract.schema.model_family == "qwen3_moe"
+    assert profile.required_kernel_contracts == (
+        "qwen3_dense_sglang_math",
+        "qwen3_moe_sglang_math",
+    )
+    assert "ep" in profile.supported_train_layouts
+    assert profile.supports_ep_invariant
+    assert get_megatron_model_type("Qwen3-30B-A3B") == "qwen3-30B-A3B"
 
 
 @pytest.mark.parametrize(
@@ -88,6 +111,139 @@ def test_true_on_policy_target_is_derived_from_train_and_rollout_tp(
         "fa3",
     )
     assert "--sglang-rl-on-policy-target" not in plan.train_args
+
+
+def test_qwen3_moe_ep_is_separate_from_tp_invariant_rollout():
+    args = _args(
+        model_name="Qwen3-30B-A3B",
+        tensor_model_parallel_size=1,
+        context_parallel_size=2,
+        expert_model_parallel_size=4,
+        expert_tensor_parallel_size=1,
+        rollout_num_gpus_per_engine=1,
+        true_on_policy_contract=None,
+    )
+
+    plan = build_true_on_policy_launch_plan(args)
+
+    assert plan.sglang_target == "fsdp"
+    assert plan.contract is QWEN3_MOE_TRUE_ON_POLICY_V1
+    assert plan.parallel_layout is not None
+    assert plan.parallel_layout.uses_train_ep
+    assert not plan.parallel_layout.uses_train_tp
+    assert not plan.parallel_layout.uses_train_expert_tp
+    assert plan.kernel_policy is not None
+    assert not plan.kernel_policy.tp_invariant_row_linear
+    assert not plan.kernel_policy.deterministic_tp_allreduce
+    assert plan.kernel_policy.ep_invariant_moe
+    assert plan.kernel_policy.deterministic_moe_routing
+    assert plan.kernel_policy.moe_topk_tiebreak == "stable_sort"
+    assert plan.env_vars["MODEL_ARGS_DISABLE_MOE_PERMUTE_FUSION"] == "1"
+    assert "--sglang-true-on-policy-contract qwen3_moe_true_on_policy_v1" in plan.train_args
+    assert "--true-on-policy-contract qwen3_moe_true_on_policy_v1" in plan.train_args
+
+
+def test_qwen3_moe_rollout_ep_does_not_enable_unverified_dp_attention():
+    args = _args(
+        model_name="Qwen3-30B-A3B",
+        tensor_model_parallel_size=1,
+        context_parallel_size=2,
+        expert_model_parallel_size=4,
+        expert_tensor_parallel_size=1,
+        rollout_num_gpus_per_engine=4,
+        sglang_expert_parallel_size=4,
+    )
+
+    plan = build_true_on_policy_launch_plan(args)
+
+    assert plan.kernel_policy is not None
+    assert plan.kernel_policy.sglang_attention_data_parallel_size == 1
+    assert "--sglang-data-parallel-size" not in plan.train_args
+    assert "--sglang-enable-dp-attention" not in plan.train_args
+
+
+def test_qwen3_moe_rollout_tp_still_enables_tp_invariant_math():
+    args = _args(
+        model_name="Qwen3-30B-A3B",
+        tensor_model_parallel_size=1,
+        context_parallel_size=2,
+        expert_model_parallel_size=4,
+        rollout_num_gpus_per_engine=8,
+    )
+
+    plan = build_true_on_policy_launch_plan(args)
+
+    assert plan.sglang_target == "fsdp_tp"
+    assert plan.kernel_policy is not None
+    assert plan.kernel_policy.tp_invariant_row_linear
+    assert plan.kernel_policy.deterministic_tp_allreduce
+    assert plan.kernel_policy.ep_invariant_moe
+
+
+@pytest.mark.parametrize(
+    ("tp_size", "ep_size", "cp_size"),
+    [
+        (1, 4, 2),
+        (4, 1, 2),
+    ],
+)
+def test_qwen3_moe_valid_8_gpu_megatron_training_topologies(
+    tp_size: int,
+    ep_size: int,
+    cp_size: int,
+):
+    args = _args(
+        model_name="Qwen3-30B-A3B",
+        tensor_model_parallel_size=tp_size,
+        context_parallel_size=cp_size,
+        expert_model_parallel_size=ep_size,
+        expert_tensor_parallel_size=1,
+        rollout_num_gpus_per_engine=max(tp_size, ep_size),
+        sglang_expert_parallel_size=ep_size,
+        num_nodes=1,
+        num_gpus_per_node=8,
+    )
+
+    plan = build_true_on_policy_launch_plan(args)
+
+    assert plan.parallel_layout is not None
+    assert plan.parallel_layout.train_tensor_parallel_size == tp_size
+    assert plan.parallel_layout.train_expert_model_parallel_size == ep_size
+    assert plan.parallel_layout.train_context_parallel_size == cp_size
+
+
+def test_qwen3_moe_rejects_train_tp_with_ep_until_sequence_parallel_is_supported():
+    args = _args(
+        model_name="Qwen3-30B-A3B",
+        tensor_model_parallel_size=2,
+        context_parallel_size=1,
+        expert_model_parallel_size=4,
+        expert_tensor_parallel_size=1,
+        rollout_num_gpus_per_engine=4,
+        sglang_expert_parallel_size=4,
+        num_nodes=1,
+        num_gpus_per_node=8,
+    )
+
+    with pytest.raises(ValueError, match="does not support train TP with EP yet"):
+        build_true_on_policy_launch_plan(args)
+
+
+def test_qwen3_moe_rejects_ep_that_does_not_fit_8_gpu_megatron_dp():
+    args = _args(
+        model_name="Qwen3-30B-A3B",
+        tensor_model_parallel_size=4,
+        context_parallel_size=2,
+        expert_model_parallel_size=4,
+        expert_tensor_parallel_size=1,
+        rollout_num_gpus_per_engine=4,
+        sglang_expert_parallel_size=4,
+        num_nodes=1,
+        num_gpus_per_node=8,
+    )
+
+    with pytest.raises(ValueError, match="needs at least 32 train GPUs"):
+        build_true_on_policy_launch_plan(args)
 
 
 def test_legacy_sglang_target_override_does_not_change_contract_policy():
@@ -200,6 +356,8 @@ def test_megatron_tp2_cp4_normal_topology_has_complete_true_on_policy_contract(m
         "NCCL_ALGO": "Ring",
         "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
         "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+        "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_DEEPGEMM": "0",
+        "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "0",
     }
 
 

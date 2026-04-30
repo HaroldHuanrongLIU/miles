@@ -19,6 +19,26 @@ _ = exec_command, exec_command_all_ray_node, dataclass_cli
 repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[3]
 
 
+def _runtime_pythonpath(megatron_path: str) -> str:
+    paths = [
+        str(repo_base_dir),
+        megatron_path,
+    ]
+    sglang_python = repo_base_dir.parent / "sglang" / "python"
+    if sglang_python.exists():
+        paths.append(str(sglang_python))
+    if existing := os.environ.get("PYTHONPATH"):
+        paths.extend(existing.split(os.pathsep))
+
+    deduped = []
+    seen = set()
+    for path in paths:
+        if path and path not in seen:
+            deduped.append(path)
+            seen.add(path)
+    return os.pathsep.join(deduped)
+
+
 def convert_checkpoint(
     model_name,
     megatron_model_type,
@@ -146,7 +166,7 @@ def execute_train(
     runtime_env_json = json.dumps(
         {
             "env_vars": {
-                "PYTHONPATH": megatron_path,
+                "PYTHONPATH": _runtime_pythonpath(megatron_path),
                 # If setting this in FSDP, the computation communication overlapping may have issues
                 **(
                     {}
@@ -222,12 +242,12 @@ def get_default_wandb_args(test_file: str, run_name_prefix: str | None = None, r
         wandb_run_name = f"{x}_{wandb_run_name}"
 
     # Use the actual key value from environment to avoid shell expansion issues
-    wandb_key = os.environ.get("WANDB_API_KEY")
+    # W&B reads WANDB_API_KEY from the environment. Do not place the key on the
+    # command line, because Ray stores and prints entrypoint commands.
     return (
         "--use-wandb "
         f"--wandb-project miles-{test_name} "
         f"--wandb-group {wandb_run_name} "
-        f"--wandb-key '{wandb_key}' "
         "--disable-wandb-random-suffix "
     )
 

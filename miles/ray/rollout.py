@@ -134,6 +134,7 @@ class ServerGroup:
                     "SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
                     "SGLANG_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
                     "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
+                    "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_DEEPGEMM": "1",
                     "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
                     "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
                     "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
@@ -686,6 +687,16 @@ class RolloutManager:
             "truncated": [1 if sample.status == Sample.Status.TRUNCATED else 0 for sample in samples],
             "sample_indices": [sample.index for sample in samples],
         }
+        rollout_dp_ranks = [
+            sample.metadata.get("rollout_log_probs_dp_rank")
+            if isinstance(sample.metadata, dict)
+            else None
+            for sample in samples
+        ]
+        if any(dp_rank is not None for dp_rank in rollout_dp_ranks):
+            train_data["rollout_dp_ranks"] = [
+                int(dp_rank) if dp_rank is not None else -1 for dp_rank in rollout_dp_ranks
+            ]
 
         # loss mask
         # TODO: compress the loss mask
@@ -770,6 +781,7 @@ class RolloutManager:
                 "loss_masks",
                 "round_number",
                 "sample_indices",
+                "rollout_dp_ranks",
                 "rollout_log_probs",
                 "rollout_routed_experts",
                 "prompt",

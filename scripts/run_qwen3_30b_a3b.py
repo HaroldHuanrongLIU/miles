@@ -1,20 +1,41 @@
+import os
 from dataclasses import dataclass
 from typing import Literal
 
 import typer
 
 import miles.utils.external_utils.command_utils as U
+from miles.true_on_policy import (
+    apply_true_on_policy_script_defaults,
+    build_true_on_policy_launch_plan,
+    get_megatron_model_type,
+)
 
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    mode: Literal["normal", "debug_minimal"] = "normal"
+    mode: Literal["normal", "debug_minimal", "debug_one_sample"] = "normal"
     run_id: str = U.create_run_id()
     model_name: str = "Qwen3-30B-A3B"
-    megatron_model_type: str = "qwen3-30B-A3B"
+    megatron_model_type: str | None = None
     num_gpus_per_node: int | None = None
     hardware: Literal["H100", "B200", "B300", "GB200", "GB300"] = "H100"
     enable_eval: bool = True
+    train_backend: Literal["megatron"] = "megatron"
+    true_on_policy: bool = False
+    true_on_policy_contract: str | None = None
+    tensor_model_parallel_size: int | None = None
+    pipeline_model_parallel_size: int = 1
+    context_parallel_size: int | None = None
+    cp_comm_type: Literal["p2p", "a2a", "all_gather", "allgather", "a2a+p2p"] | None = None
+    expert_model_parallel_size: int | None = None
+    expert_tensor_parallel_size: int = 1
+    rollout_num_gpus: int | None = None
+    rollout_num_gpus_per_engine: int | None = None
+    sglang_expert_parallel_size: int | None = None
+    sglang_rl_on_policy_target: Literal["fsdp", "fsdp_tp"] | None = None
+    use_sequence_parallel: bool = True
+    max_tokens_per_gpu: int = 32768
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
@@ -31,7 +52,46 @@ class ScriptArgs(U.ExecuteTrainConfig):
     tis_use_rs: bool = True
 
     def __post_init__(self):
+        if self.cp_comm_type == "allgather":
+            self.cp_comm_type = "all_gather"
+        self.megatron_model_type = self.megatron_model_type or get_megatron_model_type(self.model_name)
         self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
+        if self.tensor_model_parallel_size is None:
+            self.tensor_model_parallel_size = 4
+        if self.context_parallel_size is None:
+            self.context_parallel_size = 1
+        if self.expert_model_parallel_size is None:
+            if self.hardware == "H100":
+                self.expert_model_parallel_size = 8
+            else:
+                self.expert_model_parallel_size = self.num_gpus_per_node if self.train_mxfp8 else 4
+        rollout_num_gpus_per_engine_was_defaulted = self.rollout_num_gpus_per_engine is None
+        if self.rollout_num_gpus_per_engine is None:
+            if self.rollout_fp8:
+                self.rollout_num_gpus_per_engine = 2
+            elif self.rollout_int4:
+                self.rollout_num_gpus_per_engine = 1
+            elif self.hardware == "H100":
+                self.rollout_num_gpus_per_engine = 8
+            else:
+                self.rollout_num_gpus_per_engine = 4
+        if self.sglang_expert_parallel_size is None:
+            self.sglang_expert_parallel_size = self.expert_model_parallel_size if self.true_on_policy else 1
+        if (
+            self.true_on_policy
+            and rollout_num_gpus_per_engine_was_defaulted
+            and self.sglang_expert_parallel_size > 1
+        ):
+            # SGLang's MoE TP is derived as tp_size / ep_size. For true-on-policy
+            # parity with Megatron expert-TP=1, default rollout engines to the EP
+            # size unless the caller explicitly requests another rollout topology.
+            self.rollout_num_gpus_per_engine = self.sglang_expert_parallel_size
+        if self.sglang_expert_parallel_size > self.rollout_num_gpus_per_engine:
+            raise ValueError(
+                "sglang_expert_parallel_size cannot exceed rollout_num_gpus_per_engine "
+                f"({self.sglang_expert_parallel_size} > {self.rollout_num_gpus_per_engine})"
+            )
+        apply_true_on_policy_script_defaults(self)
         if self.rollout_int4:
             assert not self.rollout_fp8, "rollout_int4 and rollout_fp8 cannot be enabled at the same time"
             assert not self.rollout_mxfp8, "rollout_int4 and rollout_mxfp8 cannot be enabled at the same time"
@@ -79,6 +139,20 @@ def prepare(args: ScriptArgs):
 
 # TODO improve layering: split algorithm vs infra
 def execute(args: ScriptArgs):
+    is_debug_mode = args.mode != "normal"
+    is_debug_one_sample = args.mode == "debug_one_sample"
+    train_data_parallel_size = (
+        args.num_nodes
+        * args.num_gpus_per_node
+        // (
+            args.tensor_model_parallel_size
+            * args.pipeline_model_parallel_size
+            * args.context_parallel_size
+        )
+    )
+    debug_global_batch_size = max(1, train_data_parallel_size)
+    debug_rollout_batch_size = debug_global_batch_size
+    debug_num_rollout = 1
     ref_load_path = (
         f"{args.model_dir}/{args.model_name}/"
         if args.enable_megatron_bridge
@@ -99,8 +173,8 @@ def execute(args: ScriptArgs):
         f"--ref-load {ref_load_path} "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
-        f"--save-interval {2 if args.mode == 'debug_minimal' else 20} "
-        f"--save-retain-interval {2 if args.mode == 'debug_minimal' else 20} "
+        f"--save-interval {2 if is_debug_mode else 20} "
+        f"--save-retain-interval {2 if is_debug_mode else 20} "
     )
 
     rollout_args = (
@@ -110,17 +184,17 @@ def execute(args: ScriptArgs):
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type deepscaler "
-        "--num-rollout 3000 "
-        "--rollout-batch-size 32 "
-        "--n-samples-per-prompt 8 "
-        f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 8192} "
+        f"--num-rollout {debug_num_rollout if is_debug_one_sample else 3000} "
+        f"--rollout-batch-size {debug_rollout_batch_size if is_debug_one_sample else 32} "
+        f"--n-samples-per-prompt {1 if is_debug_one_sample else 8} "
+        f"--rollout-max-response-len {2 if is_debug_one_sample else (100 if args.mode == 'debug_minimal' else 8192)} "
         "--rollout-temperature 1 "
-        "--global-batch-size 256 "
+        f"--global-batch-size {debug_global_batch_size if is_debug_one_sample else 256} "
         "--balance-data "
     )
 
     eval_args = ""
-    if (args.mode != "debug_minimal") and args.enable_eval:
+    if (not is_debug_mode) and args.enable_eval:
         eval_args += (
             "--eval-interval 20 "
             f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
@@ -135,8 +209,9 @@ def execute(args: ScriptArgs):
         "--recompute-num-layers 1 "
         # "--micro-batch-size 1 "
         "--use-dynamic-batch-size "
-        "--max-tokens-per-gpu 32768 "
+        f"--max-tokens-per-gpu {args.max_tokens_per_gpu} "
     )
+    ci_args = "--ci-test --ci-disable-kl-checker " if is_debug_one_sample else ""
 
     grpo_args = (
         "--advantage-estimator grpo "
@@ -212,37 +287,48 @@ def execute(args: ScriptArgs):
     match (args.hardware, args.num_nodes):
         case ("H100", 1):
             perf_args += (
-                "--tensor-model-parallel-size 4 "
-                "--sequence-parallel "
-                "--pipeline-model-parallel-size 1 "
-                "--context-parallel-size 1 "
-                "--expert-model-parallel-size 8 "
-                "--expert-tensor-parallel-size 1 "
+                f"--tensor-model-parallel-size {args.tensor_model_parallel_size} "
+                f"{'--sequence-parallel ' if args.use_sequence_parallel and args.tensor_model_parallel_size > 1 else ''}"
+                f"--pipeline-model-parallel-size {args.pipeline_model_parallel_size} "
+                f"--context-parallel-size {args.context_parallel_size} "
+                f"{f'--cp-comm-type {args.cp_comm_type} ' if args.cp_comm_type is not None else ''}"
+                f"--expert-model-parallel-size {args.expert_model_parallel_size} "
+                f"--expert-tensor-parallel-size {args.expert_tensor_parallel_size} "
             )
             sglang_args = (
-                f"--rollout-num-gpus-per-engine {2 if args.rollout_fp8 else 1 if args.rollout_int4 else 8} "
+                f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} "
+                f"{f'--rollout-num-gpus {args.rollout_num_gpus} ' if args.rollout_num_gpus is not None else ''}"
+                f"{f'--sglang-ep-size {args.sglang_expert_parallel_size} ' if args.sglang_expert_parallel_size > 1 else ''}"
                 "--sglang-mem-fraction-static 0.7 "
                 "--sglang-cuda-graph-max-bs 512 "
+                f"{'--sglang-disable-cuda-graph ' if is_debug_one_sample else ''}"
             )
             optimizer_args += (
                 "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
             )
         case ("B200" | "B300" | "GB200" | "GB300", 1 | 2 | 4):
             perf_args += (
-                "--tensor-model-parallel-size 4 "
-                "--sequence-parallel "
-                "--pipeline-model-parallel-size 1 "
-                "--context-parallel-size 1 "
-                f"--expert-model-parallel-size {args.num_gpus_per_node if args.train_mxfp8 else 4} "
-                "--expert-tensor-parallel-size 1 "
+                f"--tensor-model-parallel-size {args.tensor_model_parallel_size} "
+                f"{'--sequence-parallel ' if args.use_sequence_parallel and args.tensor_model_parallel_size > 1 else ''}"
+                f"--pipeline-model-parallel-size {args.pipeline_model_parallel_size} "
+                f"--context-parallel-size {args.context_parallel_size} "
+                f"{f'--cp-comm-type {args.cp_comm_type} ' if args.cp_comm_type is not None else ''}"
+                f"--expert-model-parallel-size {args.expert_model_parallel_size} "
+                f"--expert-tensor-parallel-size {args.expert_tensor_parallel_size} "
             )
-            sglang_args = "--sglang-mem-fraction-static 0.7 " "--sglang-attention-backend trtllm_mha "
+            sglang_args = (
+                "--sglang-mem-fraction-static 0.7 "
+                "--sglang-attention-backend trtllm_mha "
+                f"{f'--rollout-num-gpus {args.rollout_num_gpus} ' if args.rollout_num_gpus is not None else ''}"
+                f"{f'--sglang-ep-size {args.sglang_expert_parallel_size} ' if args.sglang_expert_parallel_size > 1 else ''}"
+                f"{'--sglang-disable-cuda-graph ' if is_debug_one_sample else ''}"
+            )
             if args.rollout_fp8:
                 sglang_world_size = 2
                 sglang_attn_tp_size = 2
                 sglang_decode_max_bs = 256
                 sglang_args += (
-                    f"--rollout-num-gpus-per-engine 2 "
+                    f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} "
                     f"--sglang-ep-size {sglang_world_size} "
                     "--sglang-moe-runner-backend deep_gemm "
                     "--sglang-moe-a2a-backend deepep "
@@ -255,7 +341,7 @@ def execute(args: ScriptArgs):
                 sglang_attn_tp_size = 1
                 sglang_decode_max_bs = 256
                 sglang_args += (
-                    f"--rollout-num-gpus-per-engine 1 "
+                    f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} "
                     "--sglang-fp8-gemm-backend triton "
                     # Currently, only cutlass moe runner is supported in sglang for mxfp8, which does not support ep
                     # f"--sglang-ep-size {sglang_world_size} "
@@ -267,7 +353,10 @@ def execute(args: ScriptArgs):
                     f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
                 )
             else:
-                sglang_args += "--rollout-num-gpus-per-engine 4 " "--sglang-cuda-graph-max-bs 512 "
+                sglang_args += (
+                    f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} "
+                    "--sglang-cuda-graph-max-bs 512 "
+                )
         case _:
             raise NotImplementedError
 
@@ -293,6 +382,11 @@ tis_batch_normalize: true
             "--custom-tis-function-path examples.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 
+    true_on_policy_plan = build_true_on_policy_launch_plan(args)
+    true_on_policy_args = true_on_policy_plan.train_args
+    true_on_policy_envs = true_on_policy_plan.env_vars
+    os.environ.update(true_on_policy_envs)
+
     train_args = (
         f"{ckpt_args} "
         f"{rollout_args} "
@@ -301,16 +395,19 @@ tis_batch_normalize: true
         f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{eval_args} "
+        f"{ci_args} "
         f"{sglang_args} "
         f"{misc_args} "
+        f"{true_on_policy_args} "
         f"{args.extra_args} "
     )
 
     U.execute_train(
         train_args=train_args,
+        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
-        extra_env_vars={**misc_env_vars},
+        extra_env_vars={**misc_env_vars, **true_on_policy_envs},
         megatron_path=args.megatron_path,
     )
 
