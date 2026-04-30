@@ -24,6 +24,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     train_backend: Literal["megatron"] = "megatron"
     true_on_policy: bool = False
     true_on_policy_contract: str | None = None
+    true_on_policy_fast_decode: bool = False
     tensor_model_parallel_size: int | None = None
     pipeline_model_parallel_size: int = 1
     context_parallel_size: int | None = None

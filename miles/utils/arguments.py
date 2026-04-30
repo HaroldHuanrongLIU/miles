@@ -155,6 +155,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--true-on-policy-fast-decode",
+                action="store_true",
+                default=False,
+                help=(
+                    "Use SGLang's normal fast decode kernels during generation while keeping "
+                    "deterministic SGLang prefill for rollout logprob recomputation. Requires "
+                    "--true-on-policy-mode and --recompute-logprobs-via-prefill."
+                ),
+            )
+            parser.add_argument(
                 "--train-env-vars",
                 type=json.loads,
                 default="{}",
@@ -1859,6 +1869,12 @@ def miles_validate_args(args):
 
     if args.recompute_logprobs_via_prefill:
         assert args.true_on_policy_mode, "--recompute-logprobs-via-prefill requires --true-on-policy-mode"
+
+    if getattr(args, "true_on_policy_fast_decode", False):
+        assert args.true_on_policy_mode, "--true-on-policy-fast-decode requires --true-on-policy-mode"
+        assert (
+            args.recompute_logprobs_via_prefill
+        ), "--true-on-policy-fast-decode requires --recompute-logprobs-via-prefill"
 
     # Normalize --tito-allowed-append-roles: lowercase + deduplicate.
     raw_roles = getattr(args, "tito_allowed_append_roles", ["tool"])

@@ -73,3 +73,37 @@ def test_qwen3_moe_default_rollout_engine_size_matches_sglang_ep():
 
     assert args.sglang_expert_parallel_size == 4
     assert args.rollout_num_gpus_per_engine == 4
+
+
+def test_qwen3_moe_script_fast_decode_wires_prefill_only_determinism(monkeypatch):
+    captured = {}
+
+    def fake_execute_train(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(run_qwen3_30b_a3b.U, "execute_train", fake_execute_train)
+    monkeypatch.setattr(run_qwen3_30b_a3b.U, "get_default_wandb_args", lambda *args, **kwargs: "")
+
+    args = run_qwen3_30b_a3b.ScriptArgs(
+        mode="debug_one_sample",
+        run_id="unit-test-moe-fast-decode",
+        true_on_policy=True,
+        true_on_policy_fast_decode=True,
+        enable_eval=False,
+        tensor_model_parallel_size=1,
+        context_parallel_size=2,
+        cp_comm_type="a2a",
+        expert_model_parallel_size=4,
+        expert_tensor_parallel_size=1,
+        rollout_num_gpus=8,
+        rollout_num_gpus_per_engine=4,
+    )
+
+    run_qwen3_30b_a3b.execute(args)
+
+    train_args = captured["train_args"]
+
+    assert "--sglang-enable-deterministic-inference" not in train_args
+    assert "--sglang-enable-prefill-only-deterministic-inference" in train_args
+    assert "--true-on-policy-fast-decode" in train_args
+    assert "--recompute-logprobs-via-prefill" in train_args

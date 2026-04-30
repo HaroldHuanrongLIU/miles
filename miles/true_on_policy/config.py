@@ -75,6 +75,7 @@ class TrueOnPolicyKernelPolicy:
 
     contract: TrueOnPolicyContract
     deterministic_inference: bool
+    prefill_only_deterministic_inference: bool
     deterministic_training: bool
     sglang_attention_backend: str
     megatron_uses_sglang_backend: bool
@@ -97,6 +98,8 @@ class TrueOnPolicyKernelPolicy:
             "--sglang-attention-backend",
             self.sglang_attention_backend,
         ]
+        if self.prefill_only_deterministic_inference:
+            values.insert(0, "--sglang-enable-prefill-only-deterministic-inference")
         if self.deterministic_inference:
             values.insert(0, "--sglang-enable-deterministic-inference")
         if self.sglang_attention_data_parallel_size > 1:
@@ -190,6 +193,7 @@ class TrueOnPolicyConfig:
     rollout_expert_parallel_size: int = 1
     train_world_size: int | None = None
     contract_override: str | None = None
+    fast_decode: bool = False
 
     @property
     def parallel_layout(self) -> TrueOnPolicyParallelLayout:
@@ -289,22 +293,31 @@ class TrueOnPolicyConfig:
             )
 
     def build_kernel_policy(self) -> TrueOnPolicyKernelPolicy:
+        policy_kwargs = self.contract.kernel_policy_kwargs_for(
+            train_backend=self.train_backend,
+            parallel_layout=self.parallel_layout,
+        )
+        if self.fast_decode:
+            policy_kwargs["deterministic_inference"] = False
         return TrueOnPolicyKernelPolicy(
             contract=self.contract,
-            **self.contract.kernel_policy_kwargs_for(
-                train_backend=self.train_backend,
-                parallel_layout=self.parallel_layout,
-            ),
+            prefill_only_deterministic_inference=self.fast_decode,
+            **policy_kwargs,
         )
 
     def build_launch_plan(self) -> TrueOnPolicyLaunchPlan:
         self.validate()
         kernel_policy = self.build_kernel_policy()
         miles_args = TrueOnPolicyArgList(
-            (
-                "--deterministic-mode",
-                "--true-on-policy-mode",
-                "--recompute-logprobs-via-prefill",
+            tuple(
+                value
+                for value in (
+                    "--deterministic-mode",
+                    "--true-on-policy-mode",
+                    "--recompute-logprobs-via-prefill",
+                    "--true-on-policy-fast-decode" if self.fast_decode else None,
+                )
+                if value is not None
             )
         )
 
@@ -372,6 +385,7 @@ def build_true_on_policy_config(args: Any) -> TrueOnPolicyConfig | None:
         rollout_expert_parallel_size=_get_optional_int(args, "sglang_expert_parallel_size", 1),
         train_world_size=train_world_size,
         contract_override=getattr(args, "true_on_policy_contract", None),
+        fast_decode=getattr(args, "true_on_policy_fast_decode", False),
     )
 
 

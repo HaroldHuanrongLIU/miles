@@ -140,12 +140,18 @@ def validate_args(args):
     if hasattr(args, "sglang_attention_context_parallel_size"):
         args.sglang_attn_cp_size = args.sglang_attention_context_parallel_size
 
-    if args.true_on_policy_mode:
+    true_on_policy_fast_decode = getattr(args, "true_on_policy_fast_decode", False)
+
+    if args.true_on_policy_mode and not true_on_policy_fast_decode:
         args.sglang_enable_deterministic_inference = True
 
     if getattr(args, "recompute_logprobs_via_prefill", False):
         args.sglang_enable_prefill_only_deterministic_inference = True
-        args.sglang_enable_deterministic_inference = True
+        if not true_on_policy_fast_decode:
+            args.sglang_enable_deterministic_inference = True
+
+    if true_on_policy_fast_decode:
+        args.sglang_enable_deterministic_inference = False
 
     if args.sglang_dp_size > 1:
         assert args.sglang_enable_dp_attention
