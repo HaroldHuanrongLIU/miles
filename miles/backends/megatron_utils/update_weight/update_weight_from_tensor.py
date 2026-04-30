@@ -1,6 +1,9 @@
 import logging
+import json
+import os
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import ray
@@ -24,6 +27,173 @@ from .update_weight_from_distributed.broadcast import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _weight_audit_enabled() -> bool:
+    value = os.environ.get("MILES_WEIGHT_AUDIT_ENABLE", "")
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def _weight_audit_max_versions() -> int:
+    value = os.environ.get("MILES_WEIGHT_AUDIT_MAX_VERSIONS", "3")
+    try:
+        return int(value)
+    except ValueError:
+        return 3
+
+
+def _weight_audit_dir() -> Path:
+    return Path(os.environ.get("MILES_WEIGHT_AUDIT_DIR", "/tmp/miles_weight_audit"))
+
+
+def _weight_audit_version_allowed(weight_version: int | str | None) -> bool:
+    max_versions = _weight_audit_max_versions()
+    if max_versions < 0 or weight_version is None:
+        return True
+    try:
+        return int(weight_version) <= max_versions
+    except (TypeError, ValueError):
+        return True
+
+
+def _weight_audit_family(name: str) -> str | None:
+    if name in {
+        "module.module.embedding.word_embeddings.weight",
+        "model.embed_tokens.weight",
+        "model.language_model.embed_tokens.weight",
+    }:
+        return "embedding"
+    if name in {"module.module.output_layer.weight", "lm_head.weight"}:
+        return "output_layer"
+    if name in {
+        "module.module.decoder.final_layernorm.weight",
+        "model.norm.weight",
+        "model.language_model.norm.weight",
+    }:
+        return "final_layernorm"
+    if ".mlp.router." in name or ".mlp.gate.weight" in name:
+        return "moe_router"
+    if ".mlp.experts." in name and (
+        ".linear_fc1." in name
+        or ".gate_proj." in name
+        or ".up_proj." in name
+        or ".gate_up_proj" in name
+    ):
+        return "moe_expert_fc1"
+    if ".mlp.experts." in name and (
+        ".linear_fc2." in name
+        or ".down_proj." in name
+    ):
+        return "moe_expert_fc2"
+    return None
+
+
+def _weight_audit_selected_names(names: Sequence[str]) -> list[str]:
+    by_family: dict[str, list[str]] = {}
+    for name in names:
+        family = _weight_audit_family(name)
+        if family is not None:
+            by_family.setdefault(family, []).append(name)
+
+    selected: list[str] = []
+    for names_for_family in by_family.values():
+        ordered = sorted(names_for_family)
+        candidate_indices = {0, len(ordered) // 2, len(ordered) - 1}
+        for index in sorted(candidate_indices):
+            if 0 <= index < len(ordered):
+                selected.append(ordered[index])
+    return sorted(set(selected))
+
+
+def _weight_audit_tensor_stats(tensor: torch.Tensor) -> dict[str, object]:
+    with torch.no_grad():
+        detached = tensor.detach()
+        flat = detached.reshape(-1)
+        numel = flat.numel()
+        if numel == 0:
+            sample = flat
+        else:
+            sample_size = min(4096, numel)
+            midpoint = max(0, (numel - sample_size) // 2)
+            sample = torch.cat(
+                [
+                    flat[:sample_size],
+                    flat[midpoint : midpoint + sample_size],
+                    flat[-sample_size:],
+                ]
+            )
+        sample_float = sample.float()
+        if sample_float.numel() == 0:
+            sample_sum = 0.0
+            sample_absmax = 0.0
+            sample_first = None
+            sample_last = None
+        else:
+            sample_sum = float(sample_float.sum().item())
+            sample_absmax = float(sample_float.abs().max().item())
+            sample_first = float(sample_float[0].item())
+            sample_last = float(sample_float[-1].item())
+
+        return {
+            "shape": list(detached.shape),
+            "stride": list(detached.stride()),
+            "dtype": str(detached.dtype),
+            "device": str(detached.device),
+            "numel": int(numel),
+            "storage_offset": int(detached.storage_offset()),
+            "sample_numel": int(sample_float.numel()),
+            "sample_sum_fp32": sample_sum,
+            "sample_absmax_fp32": sample_absmax,
+            "sample_first_fp32": sample_first,
+            "sample_last_fp32": sample_last,
+        }
+
+
+def _write_weight_audit(
+    *,
+    stage: str,
+    weight_version: int | str | None,
+    tensors: Mapping[str, torch.Tensor] | Sequence[tuple[str, torch.Tensor]],
+    chunk_index: int | None = None,
+) -> None:
+    if not _weight_audit_enabled() or not _weight_audit_version_allowed(weight_version):
+        return
+
+    items = list(tensors.items()) if isinstance(tensors, Mapping) else list(tensors)
+    selected_names = _weight_audit_selected_names([name for name, _ in items])
+    tensor_by_name = {name: tensor for name, tensor in items}
+    selected = {
+        name: _weight_audit_tensor_stats(tensor_by_name[name])
+        for name in selected_names
+        if name in tensor_by_name
+    }
+    if not selected:
+        return
+
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    output_dir = _weight_audit_dir()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chunk_suffix = "" if chunk_index is None else f"_chunk{chunk_index:04d}"
+    version = "unknown" if weight_version is None else str(weight_version)
+    output_path = output_dir / f"miles_{stage}_v{version}_rank{rank:03d}{chunk_suffix}.json"
+    payload = {
+        "stage": stage,
+        "weight_version": version,
+        "rank": rank,
+        "selected": selected,
+    }
+    if dist.is_initialized():
+        payload.update(
+            {
+                "world_size": dist.get_world_size(),
+                "tp_rank": mpu.get_tensor_model_parallel_rank(),
+                "pp_rank": mpu.get_pipeline_model_parallel_rank(),
+                "cp_rank": mpu.get_context_parallel_rank(),
+                "ep_rank": mpu.get_expert_model_parallel_rank(),
+            }
+        )
+    with output_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
 
 
 class UpdateWeightFromTensor:
@@ -238,12 +408,23 @@ class UpdateWeightFromTensor:
         dist.barrier(group=get_gloo_group())
 
         megatron_local_weights = self.weights_getter()
+        _write_weight_audit(
+            stage="megatron_local",
+            weight_version=self.weight_version,
+            tensors=megatron_local_weights,
+        )
 
         # For LoRA+distributed: base weights are frozen, skip after first round.
         if not (self.is_lora and self.use_distribute and self._lora_base_synced):
-            for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
+            for chunk_index, hf_named_tensors in enumerate(self._hf_weight_iterator.get_hf_weight_chunks(
                 megatron_local_weights, weight_type="base"
-            ):
+            )):
+                _write_weight_audit(
+                    stage="hf_chunk_base",
+                    weight_version=self.weight_version,
+                    tensors=hf_named_tensors,
+                    chunk_index=chunk_index,
+                )
                 refs, long_lived_tensors = self._send_base_params(hf_named_tensors)
                 results = ray.get(refs)
                 _check_weight_sync_results(results, is_lora=False)

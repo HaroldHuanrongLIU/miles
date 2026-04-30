@@ -541,7 +541,20 @@ class RolloutManager:
             srv.num_new_engines = 0
 
     def check_weights(self, action: str):
-        return ray.get([engine.check_weights.remote(action=action) for engine in self.rollout_engines])
+        results = ray.get([engine.check_weights.remote(action=action) for engine in self.rollout_engines])
+        failures = []
+        for index, result in enumerate(results):
+            if isinstance(result, dict):
+                success = result.get("success", True)
+                message = result.get("message", result)
+            else:
+                success = getattr(result, "success", True)
+                message = getattr(result, "message", result)
+            if success is False:
+                failures.append(f"engine[{index}]: {message}")
+        if failures:
+            raise RuntimeError(f"SGLang weight checker failed for action={action}: " + "; ".join(failures))
+        return results
 
     def _get_rollout_data(self, rollout_id):
         if self.args.load_debug_rollout_data:
