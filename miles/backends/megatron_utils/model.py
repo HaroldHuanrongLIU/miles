@@ -127,7 +127,7 @@ def setup_model_and_optimizer(
     else:
         model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
 
-    if getattr(args, "debug_disable_optimizer", False):
+    if args.debug_disable_optimizer:
         if is_megatron_main_rank():
             logger.warning(
                 "Skipping Megatron optimizer and LR scheduler initialization "
@@ -355,7 +355,7 @@ def train_one_step(
     """
     args = get_args()
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD)
-    disable_optimizer = getattr(args, "debug_disable_optimizer", False) or optimizer is None
+    disable_optimizer = args.debug_disable_optimizer or optimizer is None
 
     # Set grad to zero.
     for model_chunk in model:
@@ -542,7 +542,7 @@ def train(
     """
     parallel_state = get_parallel_state()
     args = get_args()
-    disable_optimizer = getattr(args, "debug_disable_optimizer", False) or optimizer is None
+    disable_optimizer = args.debug_disable_optimizer or optimizer is None
 
     for iterator in data_iterator:
         iterator.reset()
