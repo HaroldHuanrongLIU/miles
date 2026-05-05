@@ -43,10 +43,7 @@ def _runtime_pythonpath(megatron_path: str) -> str:
 def _shell_export_env_vars(env_vars: dict[str, str]) -> str:
     if not env_vars:
         return ""
-    return "".join(
-        f"export {key}={shlex.quote(str(value))} && "
-        for key, value in env_vars.items()
-    )
+    return "".join(f"export {key}={shlex.quote(str(value))} && " for key, value in env_vars.items())
 
 
 def convert_checkpoint(
@@ -257,7 +254,6 @@ def get_default_wandb_args(test_file: str, run_name_prefix: str | None = None, r
     if (x := run_name_prefix) is not None:
         wandb_run_name = f"{x}_{wandb_run_name}"
 
-    # Use the actual key value from environment to avoid shell expansion issues
     # W&B reads WANDB_API_KEY from the environment. Do not place the key on the
     # command line, because Ray stores and prints entrypoint commands.
     return (

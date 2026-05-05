@@ -53,7 +53,6 @@ def init_wandb_primary(args):
 
     offline = _is_offline_mode(args)
 
-    # Only perform explicit login when NOT offline
     if (not offline) and (wandb_key := _get_wandb_key(args)) is not None:
         wandb.login(key=wandb_key, host=args.wandb_host)
 
