@@ -55,7 +55,9 @@ class ServerGroup:
         """Node-0 engines only (for multi-node serving)."""
         return self.all_engines[:: self.nodes_per_engine]
 
-    def start_engines(self, port_cursors: PortCursors) -> tuple[list, list[int]]:
+    def start_engines(
+        self, port_cursors: PortCursors, start_indices: list[int] | None = None
+    ) -> tuple[list, list[int]]:
         """Create Ray actors, allocate ports, and fire ``engine.init()`` without waiting.
 
         Returns ``(init_handles, new_engine_indices)`` where *init_handles* is a list
@@ -74,7 +76,7 @@ class ServerGroup:
         new_engines = []
         new_engine_indices = []
         for i in range(len(self.all_engines)):
-            if self.all_engines[i].is_allocated:
+            if (i not in start_indices) or self.all_engines[i].is_allocated:
                 continue
 
             global_rank = self.rank_offset + i
@@ -186,7 +188,7 @@ class ServerGroup:
     async def recover(self, port_cursors: PortCursors):
         dead_indices = [i for i, engine in enumerate(self.all_engines) if not engine.is_allocated]
 
-        handles, new_engine_indices = self.start_engines(port_cursors)
+        handles, new_engine_indices = self.start_engines(port_cursors, start_indices=None)
         await asyncio.gather(*handles)
 
         release_handles = []
