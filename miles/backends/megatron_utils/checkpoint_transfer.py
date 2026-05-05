@@ -103,6 +103,10 @@ def _serialize_for_transport(
     iteration: int,
 ) -> dict[str, object]:
     tensors: list[torch.Tensor] = state_dict.pop_tensors()
+    # torchft PGTransport._cast_tensor uses `type(t) is torch.Tensor` (strict),
+    # which rejects torch.nn.Parameter. Detach into plain Tensors that share
+    # storage but pass the type check.
+    tensors = [t.detach() if type(t) is not torch.Tensor else t for t in tensors]
     return {
         "tensors": tensors,
         "hollow_state_dict": state_dict,
