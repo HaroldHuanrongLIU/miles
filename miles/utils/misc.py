@@ -38,13 +38,6 @@ class FunctionRegistry:
 function_registry = FunctionRegistry()
 
 
-def _redact_command(cmd: str) -> str:
-    cmd = re.sub(r"(--wandb-key(?:=|\s+))'[^']*'", r"\1'<redacted>'", cmd)
-    cmd = re.sub(r'(--wandb-key(?:=|\s+))"[^"]*"', r'\1"<redacted>"', cmd)
-    cmd = re.sub(r"(--wandb-key(?:=|\s+))\S+", r"\1<redacted>", cmd)
-    return re.sub(r"(WANDB_API_KEY=)\S+", r"\1<redacted>", cmd)
-
-
 # TODO may rename to `load_object` since it can be used to load things like tool_specs
 def load_function(path):
     """
@@ -83,7 +76,7 @@ class SingletonMeta(type):
 
 
 def exec_command(cmd: str, capture_output: bool = False) -> str | None:
-    print(f"EXEC: {_redact_command(cmd)}", flush=True)
+    print(f"EXEC: {cmd}", flush=True)
 
     try:
         result = subprocess.run(

@@ -1,6 +1,4 @@
 import asyncio
-import logging
-import os
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
@@ -10,21 +8,6 @@ from miles.utils.async_utils import eager_create_task
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import should_run_periodic_action
 from miles.utils.tracking_utils import init_tracking
-
-
-logger = logging.getLogger(__name__)
-
-
-def _should_check_refresh_idempotence(args):
-    return args.check_weight_update_equal and getattr(args, "lr", None) == 0
-
-
-def _is_save_disabled_for_debug():
-    return os.environ.get("MILES_DISABLE_SAVE", "").lower() in {"1", "true", "yes", "on"}
-
-
-def _skip_initial_update_for_debug():
-    return os.environ.get("MILES_SKIP_INITIAL_UPDATE", "").lower() in {"1", "true", "yes", "on"}
 
 
 async def train(args):
@@ -43,16 +26,11 @@ async def train(args):
     if args.offload_rollout:
         await rollout_manager.onload_weights.remote()
 
-    # Always update weights first so that SGLang has the loaded weights from training.
-    # This debug-only bypass isolates SGLang HF-load behavior from the Megatron weight
-    # push path when diagnosing MoE logprob scale issues.
-    if _skip_initial_update_for_debug():
-        logger.warning("Skipping initial actor_model.update_weights() because MILES_SKIP_INITIAL_UPDATE is set.")
-    else:
-        await actor_model.update_weights()
+    # always update weight first so that sglang has the loaded weights from training.
+    await actor_model.update_weights()
 
-        if args.check_weight_update_equal:
-            await rollout_manager.check_weights.remote(action="compare")
+    if args.check_weight_update_equal:
+        await rollout_manager.check_weights.remote(action="compare")
 
     if args.offload_rollout:
         await rollout_manager.onload_kv.remote()
@@ -110,18 +88,13 @@ async def train(args):
         else:
             await actor_model.train(rollout_id, rollout_data_ref)
 
-        if (
-            not _is_save_disabled_for_debug()
-            and should_run_periodic_action(rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout)
-        ):
+        if should_run_periodic_action(rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout):
             await save(rollout_id)
 
         await offload_train()
         if args.offload_rollout:
             await rollout_manager.onload_weights.remote()
         await actor_model.update_weights()
-        if _should_check_refresh_idempotence(args):
-            await rollout_manager.check_weights.remote(action="compare")
         if args.offload_rollout:
             await rollout_manager.onload_kv.remote()
 

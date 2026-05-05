@@ -1,15 +1,10 @@
-import os
 from dataclasses import dataclass
 from typing import Literal
 
 import typer
 
 import miles.utils.external_utils.command_utils as U
-from miles.true_on_policy import (
-    apply_true_on_policy_script_defaults,
-    build_true_on_policy_launch_plan,
-    get_megatron_model_type,
-)
+from miles.true_on_policy import get_megatron_model_type
 
 
 @dataclass
@@ -22,9 +17,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     hardware: Literal["H100", "B200", "B300", "GB200", "GB300"] = "H100"
     enable_eval: bool = True
     train_backend: Literal["megatron"] = "megatron"
-    true_on_policy: bool = False
-    true_on_policy_contract: str | None = None
-    true_on_policy_fast_decode: bool = False
     tensor_model_parallel_size: int | None = None
     pipeline_model_parallel_size: int = 1
     context_parallel_size: int | None = None
@@ -48,7 +40,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     train_mxfp8: bool = False
     enable_megatron_bridge: bool = False
     enable_mis: bool = False
-    # TODO improve, should be able to override more easily
     tis_use_rs: bool = True
 
     def __post_init__(self):
@@ -65,7 +56,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
                 self.expert_model_parallel_size = 8
             else:
                 self.expert_model_parallel_size = self.num_gpus_per_node if self.train_mxfp8 else 4
-        rollout_num_gpus_per_engine_was_defaulted = self.rollout_num_gpus_per_engine is None
         if self.rollout_num_gpus_per_engine is None:
             if self.rollout_fp8:
                 self.rollout_num_gpus_per_engine = 2
@@ -76,22 +66,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
             else:
                 self.rollout_num_gpus_per_engine = 4
         if self.sglang_expert_parallel_size is None:
-            self.sglang_expert_parallel_size = self.expert_model_parallel_size if self.true_on_policy else 1
-        if (
-            self.true_on_policy
-            and rollout_num_gpus_per_engine_was_defaulted
-            and self.sglang_expert_parallel_size > 1
-        ):
-            # SGLang's MoE TP is derived as tp_size / ep_size. For true-on-policy
-            # parity with Megatron expert-TP=1, default rollout engines to the EP
-            # size unless the caller explicitly requests another rollout topology.
-            self.rollout_num_gpus_per_engine = self.sglang_expert_parallel_size
+            self.sglang_expert_parallel_size = 1
         if self.sglang_expert_parallel_size > self.rollout_num_gpus_per_engine:
             raise ValueError(
                 "sglang_expert_parallel_size cannot exceed rollout_num_gpus_per_engine "
                 f"({self.sglang_expert_parallel_size} > {self.rollout_num_gpus_per_engine})"
             )
-        apply_true_on_policy_script_defaults(self)
         if self.rollout_int4:
             assert not self.rollout_fp8, "rollout_int4 and rollout_fp8 cannot be enabled at the same time"
             assert not self.rollout_mxfp8, "rollout_int4 and rollout_mxfp8 cannot be enabled at the same time"
@@ -144,11 +124,7 @@ def execute(args: ScriptArgs):
     train_data_parallel_size = (
         args.num_nodes
         * args.num_gpus_per_node
-        // (
-            args.tensor_model_parallel_size
-            * args.pipeline_model_parallel_size
-            * args.context_parallel_size
-        )
+        // (args.tensor_model_parallel_size * args.pipeline_model_parallel_size * args.context_parallel_size)
     )
     debug_global_batch_size = max(1, train_data_parallel_size)
     debug_rollout_batch_size = debug_global_batch_size
@@ -382,11 +358,6 @@ tis_batch_normalize: true
             "--custom-tis-function-path examples.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 
-    true_on_policy_plan = build_true_on_policy_launch_plan(args)
-    true_on_policy_args = true_on_policy_plan.train_args
-    true_on_policy_envs = true_on_policy_plan.env_vars
-    os.environ.update(true_on_policy_envs)
-
     train_args = (
         f"{ckpt_args} "
         f"{rollout_args} "
@@ -398,7 +369,6 @@ tis_batch_normalize: true
         f"{ci_args} "
         f"{sglang_args} "
         f"{misc_args} "
-        f"{true_on_policy_args} "
         f"{args.extra_args} "
     )
 
@@ -407,7 +377,7 @@ tis_batch_normalize: true
         config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
-        extra_env_vars={**misc_env_vars, **true_on_policy_envs},
+        extra_env_vars=misc_env_vars,
         megatron_path=args.megatron_path,
     )
 
