@@ -32,10 +32,6 @@ def create_indep_dp_group(
         raise ImportError("torchft is required for indep_dp. Install with: pip install torchft") from e
 
     _OPERATION_TIMEOUT = timedelta(seconds=120)
-    # configure() needs a long timeout because it waits for ALL cells to reach
-    # the same configure call (NCCL/Gloo handshake). During healing, the new
-    # cell does a full Megatron init before reaching configure, which can take
-    # several minutes. After configure, we reset to the shorter operation timeout.
     _CONFIGURE_TIMEOUT = timedelta(seconds=600)
 
     def _create(pg_cls: type, backend_name: str) -> dist.ProcessGroup:
