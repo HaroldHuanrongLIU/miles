@@ -1,5 +1,7 @@
 import asyncio
 import logging
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import ray
@@ -313,24 +315,29 @@ class RayTrainGroup:
         src_alive_rank = will_alive_indices.index(src_cell_index)
         ckpt_dst_alive_ranks = [will_alive_indices.index(x) for x in snapshotted_pending_indices]
 
-        coop_prepare_outputs = await asyncio.gather(
-            *[
-                (
-                    c.prepare_indep_dp_mode_alive(
-                        indep_dp_info=self._compute_indep_dp_info(c.cell_index, alive_cell_indices=will_alive_indices),
-                        send_ckpt_dst_ranks=ckpt_dst_alive_ranks if c.cell_index == src_cell_index else [],
+        with _paused_health_checkers(self._cells):
+            coop_prepare_outputs = await asyncio.gather(
+                *[
+                    (
+                        c.prepare_indep_dp_mode_alive(
+                            indep_dp_info=self._compute_indep_dp_info(
+                                c.cell_index, alive_cell_indices=will_alive_indices
+                            ),
+                            send_ckpt_dst_ranks=ckpt_dst_alive_ranks if c.cell_index == src_cell_index else [],
+                        )
+                        if c.cell_index in snapshotted_alive_indices
+                        else c.prepare_indep_dp_mode_healing(
+                            indep_dp_info=self._compute_indep_dp_info(
+                                c.cell_index, alive_cell_indices=will_alive_indices
+                            ),
+                            recv_ckpt_src_rank=src_alive_rank if c.cell_index in snapshotted_pending_indices else None,
+                        )
                     )
-                    if c.cell_index in snapshotted_alive_indices
-                    else c.prepare_indep_dp_mode_healing(
-                        indep_dp_info=self._compute_indep_dp_info(c.cell_index, alive_cell_indices=will_alive_indices),
-                        recv_ckpt_src_rank=src_alive_rank if c.cell_index in snapshotted_pending_indices else None,
-                    )
-                )
-                for c in self._cells
-                if c.cell_index in will_alive_indices
-            ],
-            return_exceptions=True,
-        )
+                    for c in self._cells
+                    if c.cell_index in will_alive_indices
+                ],
+                return_exceptions=True,
+            )
         # No need to do anything else - cells with exceptions will auto mark itself as errored
         AsyncioGatherUtils.log_error(coop_prepare_outputs, debug_name="refresh_cells#cooperatively_prepare")
 
@@ -374,3 +381,14 @@ def _create_tcp_store() -> tuple["torch.distributed.TCPStore", str]:
     host = ray.util.get_node_ip_address()
     port = store.port
     return store, f"{host}:{port}"
+
+
+@contextmanager
+def _paused_health_checkers(cells: Sequence[RayTrainCell]) -> Iterator[None]:
+    for c in cells:
+        c.health_checker.pause()
+    try:
+        yield
+    finally:
+        for c in cells:
+            c.health_checker.resume()

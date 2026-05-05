@@ -6,7 +6,7 @@ import ray
 from tests.fast.ray.train.dummy_actor import DummyTrainActor
 
 from miles.backends.megatron_utils.types import TrainStepOutcome
-from miles.ray.train.group import RayTrainGroup
+from miles.ray.train.group import RayTrainGroup, _paused_health_checkers
 from miles.utils.witness.allocator import WitnessIdAllocator
 
 pytestmark = pytest.mark.asyncio
@@ -637,6 +637,40 @@ class TestHeartbeatMonitor:
         for cell in group._cells:
             cell.health_checker.resume()
         assert all(not c.health_checker._paused for c in group._cells)
+
+
+def _make_mock_cells(n: int) -> list[MagicMock]:
+    return [MagicMock(health_checker=MagicMock()) for _ in range(n)]
+
+
+class TestPausedHealthCheckersContextManager:
+    def test_pauses_all_on_enter_resumes_all_on_exit(self):
+        cells = _make_mock_cells(3)
+
+        with _paused_health_checkers(cells):
+            for c in cells:
+                c.health_checker.pause.assert_called_once()
+                c.health_checker.resume.assert_not_called()
+
+        for c in cells:
+            c.health_checker.resume.assert_called_once()
+
+    def test_resumes_all_even_when_block_raises(self):
+        """Regression: must release health_checker.resume() even on exception, otherwise
+        a transient failure during healing would leave checkers paused indefinitely."""
+        cells = _make_mock_cells(3)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            with _paused_health_checkers(cells):
+                raise RuntimeError("boom")
+
+        for c in cells:
+            c.health_checker.pause.assert_called_once()
+            c.health_checker.resume.assert_called_once()
+
+    def test_empty_cells_is_a_noop(self):
+        with _paused_health_checkers([]):
+            pass
 
 
 NORMAL = TrainStepOutcome.NORMAL
