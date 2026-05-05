@@ -4,8 +4,9 @@ import time
 from dataclasses import dataclass
 
 import ray
-
+from ray.rollout.addr_allocator import PortCursors
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
+
 from miles.ray.rollout.debug_data import load_debug_rollout_data, save_debug_rollout_data
 from miles.ray.rollout.metrics import log_eval_rollout_data, log_rollout_data
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
@@ -28,7 +29,6 @@ from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.misc import load_function
 from miles.utils.tracking_utils import init_tracking
-from ray.rollout.addr_allocator import PortCursors
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
