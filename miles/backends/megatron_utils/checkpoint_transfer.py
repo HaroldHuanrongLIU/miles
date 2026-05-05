@@ -102,15 +102,6 @@ def _serialize_for_transport(
     state_dict: MCoreTensorAwareStateDict,
     iteration: int,
 ) -> dict[str, object]:
-    """Split MCoreTensorAwareStateDict into tensor list + hollow shell.
-
-    PGTransport's tree_flatten_with_path treats MCoreTensorAwareStateDict as a
-    single non-tensor leaf (it is not pytree-registered), pickling the whole
-    dataclass — which drags every ShardedTensor.data through torch.save's slow
-    CPU-only path. pop_tensors() leaves a hollow shell (data=None per
-    ShardedTensor) that pickles cheaply; tensors travel as a list, which pytree
-    flattens to leaves so each one goes via NCCL P2P.
-    """
     tensors: list[torch.Tensor] = state_dict.pop_tensors()
     return {
         "tensors": tensors,
