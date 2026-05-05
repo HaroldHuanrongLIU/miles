@@ -2,7 +2,7 @@ import asyncio
 import dataclasses
 import logging
 import os
-from typing import Any
+from typing import Any, Optional
 
 import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
@@ -187,18 +187,19 @@ class ServerGroup:
                 logger.info(f"Engine at index {i} is already None")
             self.all_engines[i].mark_stopped()
 
-    async def recover(self, port_cursors: PortCursors):
-        dead_indices = [i for i, engine in enumerate(self.all_engines) if not engine.is_allocated]
+    async def recover(self, port_cursors: PortCursors, start_indices: Optional[list[int]] = None):
+        if start_indices is None:
+            start_indices = [i for i, engine in enumerate(self.all_engines) if not engine.is_allocated]
 
-        handles, new_engine_indices = self.start_engines(port_cursors, start_indices=None)
+        handles, new_engine_indices = self.start_engines(port_cursors, start_indices=start_indices)
         await asyncio.gather(*handles)
 
         release_handles = []
         all_resume_engines = []
         logger.info(f"Recovered {len(new_engine_indices)} dead rollout engines (worker_type={self.worker_type})")
-        assert len(new_engine_indices) == len(dead_indices), "curr_num_new_engines does not match dead_indices length"
-        if self.needs_offload and dead_indices:
-            new_engines = [self.all_engines[i] for i in dead_indices]
+        assert len(new_engine_indices) == len(start_indices), "curr_num_new_engines does not match start_indices length"
+        if self.needs_offload and start_indices:
+            new_engines = [self.all_engines[i] for i in start_indices]
             release_handles.extend(engine.actor_handle.release_memory_occupation.remote() for engine in new_engines)
             if self.update_weights or self.model_path:
                 all_resume_engines.extend(new_engines)
