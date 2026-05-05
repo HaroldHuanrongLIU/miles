@@ -367,7 +367,12 @@ class TestWitnessDumpAndClearStale:
 
             assert mock_logger.log.call_count == 4
             logged_instance_ids = [call[0][1]["instance_id"] for call in mock_logger.log.call_args_list]
-            assert logged_instance_ids == ["pp0.head", "pp0.tail", "pp1.head", "pp1.tail"]
+            assert logged_instance_ids == [
+                "pp0_chunk0.local_head",
+                "pp0_chunk0.local_tail",
+                "pp0_chunk1.local_head",
+                "pp0_chunk1.local_tail",
+            ]
 
             logged_stale_ids = [call[0][1]["stale_ids"] for call in mock_logger.log.call_args_list]
             for stale in logged_stale_ids:
