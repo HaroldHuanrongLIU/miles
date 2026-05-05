@@ -28,6 +28,7 @@ from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.misc import load_function
 from miles.utils.tracking_utils import init_tracking
+from ray.rollout.addr_allocator import PortCursors
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -238,9 +239,11 @@ class RolloutManager:
 
     # -------------------------- external start/stop -----------------------------
 
-    # TODO
-    # async def start_cell(self):
-    #     pass
+    async def start_cell(self, cell_id: int):
+        port_cursors = PortCursors.empty()
+        idx = get_cell_indexer_of_id_map(self.servers)[cell_id]
+        group = self.servers[idx.srv_key].server_groups[idx.group_index]
+        await group.recover(port_cursors=port_cursors, filter_indices=idx.engine_indices)
 
     async def stop_cell(self, cell_id: int):
         idx = get_cell_indexer_of_id_map(self.servers)[cell_id]
