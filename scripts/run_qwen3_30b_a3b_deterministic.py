@@ -40,6 +40,8 @@ def execute(args: ScriptArgs):
 
     plan = build_true_on_policy_launch_plan(args)
     os.environ.update(plan.env_vars)
+    plan_env_vars = " ".join(f"{key}={value}" for key, value in plan.env_vars.items())
+    args.extra_env_vars = " ".join(part for part in (plan_env_vars, args.extra_env_vars) if part)
     args.extra_args = f"{plan.train_args} {args.extra_args}"
     base_execute(args)
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from scripts import run_qwen3_30b_a3b
+from scripts import run_qwen3_30b_a3b_deterministic as run_qwen3_30b_a3b
 
 
 def test_qwen3_moe_script_true_on_policy_tp1_ep4_cp2_contract(monkeypatch):
@@ -33,6 +33,7 @@ def test_qwen3_moe_script_true_on_policy_tp1_ep4_cp2_contract(monkeypatch):
 
     train_args = captured["train_args"]
     env_vars = captured["extra_env_vars"]
+    config = captured["config"]
 
     assert "--tensor-model-parallel-size 1" in train_args
     assert "--context-parallel-size 2" in train_args
@@ -52,7 +53,9 @@ def test_qwen3_moe_script_true_on_policy_tp1_ep4_cp2_contract(monkeypatch):
     assert "--sequence-parallel" not in train_args
     assert "--use-sglang" not in train_args
     assert "ROW_LINEAR_ENABLE_INV" not in env_vars
-    assert env_vars["NCCL_ALGO"] == "Ring"
+    assert "NCCL_ALGO" not in env_vars
+    assert "NCCL_ALGO=Ring" in config.extra_env_vars
+    assert "MODEL_ARGS_DISABLE_MOE_PERMUTE_FUSION=1" in config.extra_env_vars
 
 
 def test_qwen3_moe_default_rollout_engine_size_matches_sglang_ep():

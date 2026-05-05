@@ -51,7 +51,7 @@ from .lora_utils import save_lora_checkpoint
 
 def _sglang_moe_rollout_context(batch):
     try:
-        from megatron.core.true_on_policy.moe import sglang_moe_rollout_context
+        from miles_megatron_plugins.true_on_policy.moe import sglang_moe_rollout_context
     except Exception:
         return nullcontext()
 
