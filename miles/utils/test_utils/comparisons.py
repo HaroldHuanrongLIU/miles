@@ -58,6 +58,11 @@ def compare_metrics(
     baseline_events = _read_metric_events(Path(baseline_dir))
     target_events = _read_metric_events(Path(target_dir))
 
+    # FT retries (healing path) leave events from earlier failed attempts. Only
+    # the highest-attempt events per rollout_id reflect the successful run.
+    baseline_events = _keep_only_final_attempt(baseline_events)
+    target_events = _keep_only_final_attempt(target_events)
+
     issues: list[str] = []
     issues += _check_event_counts(baseline_events, target_events, baseline_dir, target_dir)
 
@@ -72,6 +77,19 @@ def compare_metrics(
         f"  - {i}" for i in issues
     )
     print(f"MetricEvent comparison passed: {len(baseline_events)} steps compared")
+
+
+def _keep_only_final_attempt(events: list[MetricEvent]) -> list[MetricEvent]:
+    """Keep only events from the highest-attempt for each rollout_id.
+
+    During FT healing, a crashed rollout is retried at attempt+1; events from
+    the failed attempt are partial and should be discarded for comparison.
+    """
+    max_attempt_by_rollout: dict[int, int] = {}
+    for e in events:
+        if e.rollout_id not in max_attempt_by_rollout or e.attempt > max_attempt_by_rollout[e.rollout_id]:
+            max_attempt_by_rollout[e.rollout_id] = e.attempt
+    return [e for e in events if e.attempt == max_attempt_by_rollout[e.rollout_id]]
 
 
 def _check_event_counts(
