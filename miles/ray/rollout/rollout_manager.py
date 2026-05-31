@@ -235,7 +235,7 @@ class RolloutManager:
         return len(self.data_source.dataset) // self.args.rollout_batch_size
 
     async def check_weights(self, action: str):
-        return await asyncio.gather(*[engine.check_weights.remote(action=action) for engine in self._rollout_engines])
+        return await asyncio.gather(*[srv.check_weights(action=action) for srv in self.servers.values()])
 
     def set_train_parallel_config(self, config: dict):
         self.train_parallel_config = config
@@ -256,11 +256,6 @@ class RolloutManager:
         if not self.servers:
             return None
         return next(iter(self.servers.values()))
-
-    @property
-    def _rollout_engines(self):
-        """All node-0 engines across all servers / models."""
-        return [e for srv in self.servers.values() for e in srv.engines]
 
     # TODO will be replaced by full ft, thus temporarily leave it without modifications
     def _try_ci_fault_injection(self):
