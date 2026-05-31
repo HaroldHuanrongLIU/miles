@@ -6,6 +6,7 @@ from typing import Any
 
 import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
+from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_engine import SGLangEngine
 from miles.ray.rollout.addr_allocator import (
@@ -41,6 +42,7 @@ class ServerGroup:
     model_path: str | None = None
     router_ip: str | None = None
     router_port: int | None = None
+    update_weights: bool = True
 
     @property
     def nodes_per_engine(self):
@@ -170,6 +172,31 @@ class ServerGroup:
             else:
                 logger.info(f"Engine at index {i} is already None")
             self.all_engines[i] = None
+
+    async def recover(self, port_cursors: PortCursors):
+        dead_indices = [i for i, engine in enumerate(self.all_engines) if engine is None]
+
+        await asyncio.gather(*self.start_engines(port_cursors))
+
+        release_handles = []
+        all_resume_engines = []
+        logger.info(f"Recovered {self.num_new_engines} dead rollout engines (worker_type={self.worker_type})")
+        assert self.num_new_engines == len(dead_indices), "num_new_engines does not match dead_indices length"
+        if self.needs_offload and dead_indices:
+            new_engines = [self.all_engines[i] for i in dead_indices]
+            release_handles.extend(engine.release_memory_occupation.remote() for engine in new_engines)
+            if self.update_weights or self.model_path:
+                all_resume_engines.extend(new_engines)
+
+        if release_handles:
+            await asyncio.gather(*release_handles)
+            if all_resume_engines:
+                await asyncio.gather(
+                    *[
+                        engine.resume_memory_occupation.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS])
+                        for engine in all_resume_engines
+                    ]
+                )
 
     def offload(self, tags: list[str] | None = None):
         if not self.needs_offload:
