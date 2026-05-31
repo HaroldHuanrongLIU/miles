@@ -159,10 +159,6 @@ class RolloutServer:
         return [e for g in self.server_groups for e in g.engines]
 
     @property
-    def all_engines(self):
-        return [e for g in self.server_groups for e in g.all_engines]
-
-    @property
     def has_new_engines(self) -> bool:
         return any(g.has_new_engines for g in self.server_groups)
 
