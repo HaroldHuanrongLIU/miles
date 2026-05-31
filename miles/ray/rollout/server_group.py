@@ -69,7 +69,7 @@ class ServerGroup:
 
         RolloutRayActor = ray.remote(SGLangEngine)
 
-        rollout_engines = []
+        new_engines = []
         for i in range(len(self.all_engines)):
             if self.all_engines[i] is not None:
                 continue
@@ -120,23 +120,23 @@ class ServerGroup:
                 num_gpus_per_engine=self.num_gpus_per_engine,
             )
 
-            rollout_engines.append((global_rank, rollout_engine))
+            new_engines.append((global_rank, rollout_engine))
             self.all_engines[i] = rollout_engine
 
-        self.num_new_engines = len(rollout_engines)
+        self.num_new_engines = len(new_engines)
 
         if self.num_new_engines == 0:
             return []
 
         if self.args.rollout_external:
             addr_and_ports = allocate_rollout_engine_addr_and_ports_external(
-                args=self.args, rollout_engines=rollout_engines
+                args=self.args, rollout_engines=new_engines
             )
         else:
             base_port = port_cursors.next_base_port()
             addr_and_ports, next_port_cursors = allocate_rollout_engine_addr_and_ports_normal(
                 args=self.args,
-                rollout_engines=rollout_engines,
+                rollout_engines=new_engines,
                 worker_type=self.worker_type,
                 num_gpus_per_engine=self.num_gpus_per_engine,
                 rank_offset=self.rank_offset,
@@ -146,11 +146,11 @@ class ServerGroup:
 
         init_handles = [
             engine.init.remote(
-                **(addr_and_ports[rank]),
+                **addr_and_ports[index],
                 router_ip=self.router_ip,
                 router_port=self.router_port,
             )
-            for rank, engine in rollout_engines
+            for index, engine in new_engines
         ]
         return init_handles
 
